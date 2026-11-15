@@ -19,7 +19,18 @@ func ExtractTenantHTTPHandler(tc *Manager, h http.Handler) http.Handler {
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		tenant := r.Header.Get(tc.Header)
+		tenants := r.Header.Values(tc.Header)
+		// A request with more than one tenant header is ambiguous, so it is rejected
+		// instead of being served as the first one, as the gRPC path does.
+		if len(tenants) > 1 {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte("extra tenant header"))
+			return
+		}
+		tenant := ""
+		if len(tenants) == 1 {
+			tenant = tenants[0]
+		}
 		if tenant == "" {
 			w.WriteHeader(http.StatusUnauthorized)
 			_, _ = w.Write([]byte("missing tenant header"))
@@ -41,14 +52,16 @@ func ExtractTenantHTTPHandler(tc *Manager, h http.Handler) http.Handler {
 // via github.com/grpc-ecosystem/grpc-gateway/runtime.NewServeMux
 func (tc *Manager) MetadataAnnotator() func(context.Context, *http.Request) metadata.MD {
 	return func(_ context.Context, req *http.Request) metadata.MD {
-		tenant := req.Header.Get(tc.Header)
-		if tenant == "" {
+		tenants := req.Header.Values(tc.Header)
+		if len(tenants) == 0 || (len(tenants) == 1 && tenants[0] == "") {
 			// The HTTP request lacked the tenancy header.  Pass along
 			// empty metadata -- the gRPC query service will reject later.
 			return metadata.Pairs()
 		}
-		return metadata.New(map[string]string{
-			tc.Header: tenant,
-		})
+		// Forward every value, so that the gRPC query service rejects
+		// a request with more than one tenant header.
+		md := metadata.MD{}
+		md.Append(tc.Header, tenants...)
+		return md
 	}
 }

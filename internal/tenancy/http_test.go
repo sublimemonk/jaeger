@@ -12,6 +12,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/metadata"
 )
 
 type testHttpHandler struct {
@@ -53,6 +54,24 @@ func TestProgationHandler(t *testing.T) {
 			requestHeaders: map[string][]string{"x-tenant": {"acme"}},
 			shouldReach:    false,
 		},
+		{
+			name:           "empty tenant header",
+			tenancyMgr:     NewManager(&Options{Enabled: true}),
+			requestHeaders: map[string][]string{"x-tenant": {""}},
+			shouldReach:    false,
+		},
+		{
+			name:           "multiple tenant headers",
+			tenancyMgr:     NewManager(&Options{Enabled: true, Tenants: []string{"acme", "megacorp"}}),
+			requestHeaders: map[string][]string{"x-tenant": {"acme", "megacorp"}},
+			shouldReach:    false,
+		},
+		{
+			name:           "multiple tenant headers without tenant list",
+			tenancyMgr:     NewManager(&Options{Enabled: true}),
+			requestHeaders: map[string][]string{"x-tenant": {"acme", "megacorp"}},
+			shouldReach:    false,
+		},
 	}
 
 	for _, test := range tests {
@@ -73,21 +92,51 @@ func TestProgationHandler(t *testing.T) {
 	}
 }
 
+func TestPropagationHandlerRejectsMultipleTenants(t *testing.T) {
+	handler := &testHttpHandler{}
+	propH := ExtractTenantHTTPHandler(NewManager(&Options{Enabled: true, Tenants: []string{"acme", "megacorp"}}), handler)
+	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
+	req.Header.Add("x-tenant", "acme")
+	req.Header.Add("x-tenant", "megacorp")
+	writer := httptest.NewRecorder()
+
+	propH.ServeHTTP(writer, req)
+
+	assert.False(t, handler.reached)
+	assert.Equal(t, http.StatusUnauthorized, writer.Code)
+	assert.Equal(t, "extra tenant header", writer.Body.String())
+}
+
 func TestMetadataAnnotator(t *testing.T) {
 	tests := []struct {
 		name           string
 		tenancyMgr     *Manager
 		requestHeaders map[string][]string
+		expected       metadata.MD
 	}{
 		{
 			name:           "missing tenant",
 			tenancyMgr:     NewManager(&Options{Enabled: true}),
 			requestHeaders: map[string][]string{},
+			expected:       metadata.MD{},
+		},
+		{
+			name:           "empty tenant",
+			tenancyMgr:     NewManager(&Options{Enabled: true}),
+			requestHeaders: map[string][]string{"x-tenant": {""}},
+			expected:       metadata.MD{},
 		},
 		{
 			name:           "tenanted",
 			tenancyMgr:     NewManager(&Options{Enabled: true}),
 			requestHeaders: map[string][]string{"x-tenant": {"acme"}},
+			expected:       metadata.MD{"x-tenant": {"acme"}},
+		},
+		{
+			name:           "multiple tenants are all forwarded",
+			tenancyMgr:     NewManager(&Options{Enabled: true}),
+			requestHeaders: map[string][]string{"x-tenant": {"acme", "megacorp"}},
+			expected:       metadata.MD{"x-tenant": {"acme", "megacorp"}},
 		},
 	}
 
@@ -102,7 +151,7 @@ func TestMetadataAnnotator(t *testing.T) {
 			require.NoError(t, err)
 			annotator := test.tenancyMgr.MetadataAnnotator()
 			md := annotator(context.Background(), req)
-			assert.Len(t, md, len(test.requestHeaders))
+			assert.Equal(t, test.expected, md)
 		})
 	}
 }
