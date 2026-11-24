@@ -123,6 +123,29 @@ func TestDuplicateTraceIDDetection(t *testing.T) {
 	})
 }
 
+func TestWriteSpanFailureDoesNotUpdateCache(t *testing.T) {
+	t.Parallel()
+	runWithBadger(t, func(store *badger.DB, t *testing.T) {
+		testSpan := createDummySpan()
+
+		cache := NewCacheStore(store, time.Duration(1*time.Hour))
+		sw := NewSpanWriter(store, cache, time.Duration(1*time.Hour))
+
+		// Closing the store makes the write transaction fail
+		require.NoError(t, store.Close())
+		err := sw.WriteSpan(context.Background(), &testSpan)
+		require.ErrorIs(t, err, badger.ErrDBClosed)
+
+		services, err := cache.GetServices()
+		require.NoError(t, err)
+		assert.Empty(t, services)
+
+		operations, err := cache.GetOperations(testSpan.Process.ServiceName)
+		require.NoError(t, err)
+		assert.Empty(t, operations)
+	})
+}
+
 func createDummySpan() model.Span {
 	tid := time.Now()
 

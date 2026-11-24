@@ -110,11 +110,15 @@ func (w *SpanWriter) WriteSpan(_ context.Context, span *model.Span) error {
 
 		return nil
 	})
+	if err != nil {
+		// The span was not stored, so its service and operation must not be listed
+		return err
+	}
 
 	// Do cache refresh here to release the transaction earlier
 	w.cache.Update(span.Process.ServiceName, span.OperationName, expireTime)
 
-	return err
+	return nil
 }
 
 func createIndexKey(indexPrefixKey byte, value []byte, startTime uint64, traceID model.TraceID) []byte {
